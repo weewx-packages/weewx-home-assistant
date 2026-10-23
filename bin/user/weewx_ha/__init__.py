@@ -1,4 +1,4 @@
-"""The example library."""
+"""Publish WeeWX data to Home Assistant with MQTT discovery."""
 
 # We disable a Flake8 check for "Module imported but unused (F401)" here because
 # although this import is not directly used, it populates the value

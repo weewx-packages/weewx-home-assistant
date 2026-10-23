@@ -3,8 +3,16 @@
 https://docs.pytest.org/en/latest/writing_plugins.html#conftest-py-plugins
 """
 
+# Standard Python Libraries
+from pathlib import Path
+import sys
+
 # Third-Party Libraries
 import pytest
+
+# The payload that the WeeWX installer copies lives in bin/user. Putting that
+# directory on the path makes the same files importable as weewx_ha.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin" / "user"))
 
 
 def pytest_addoption(parser):

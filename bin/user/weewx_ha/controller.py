@@ -9,7 +9,7 @@ configuration data, and handles WeeWX loop packets.
 # Standard Python Libraries
 from concurrent.futures import ThreadPoolExecutor
 import logging
-from typing import Any
+from typing import Any, Optional
 
 # Third-Party Libraries
 import paho.mqtt.client as mqtt
@@ -39,6 +39,9 @@ class Controller(StdService):
             config_dict: The configuration dictionary
         """
         super().__init__(engine, config_dict)
+        # Stays None when the configuration is invalid, so shutDown() knows
+        # there is nothing to stop.
+        self.mqtt_client: Optional[mqtt.Client] = None
         logger.debug(
             f"Initializing extension with configuration key {EXTENSION_CONFIG_KEY}"
         )
@@ -57,7 +60,7 @@ class Controller(StdService):
         )
 
         self.availability_topic: str = f"{self.config.state_topic_prefix}/status"
-        self.mqtt_client: mqtt.Client = self.init_mqtt_client(self.config.mqtt)
+        self.mqtt_client = self.init_mqtt_client(self.config.mqtt)
 
         # Thread pool for managing tasks
         self.executor = ThreadPoolExecutor(max_workers=THREAD_POOL_SIZE)
@@ -74,6 +77,7 @@ class Controller(StdService):
             self.config.node_id,
             self.config.station,
             self.config.unit_system,
+            self.config.retain_discovery,
         )
 
         self.state_publisher = StatePublisher(
@@ -81,6 +85,8 @@ class Controller(StdService):
             self.config_publisher,
             self.config.state_topic_prefix,
             self.config.unit_system,
+            self.config.retain_state,
+            self.config.json_topic,
         )
 
         # Register the callbacks for loop packets
@@ -201,8 +207,11 @@ class Controller(StdService):
         """Handle callback for WeeWX loop packets."""
         logger.debug("Received WeeWX loop packet")
         if self.mqtt_client.is_connected():
+            # The preprocessor changes the packet, and other services and
+            # threads read the very same dict. Copy it here, in the engine
+            # thread, before the worker thread starts.
             preprocessor_future = self.executor.submit(
-                self.packet_preprocessor.process_packet, event.packet
+                self.packet_preprocessor.process_packet, dict(event.packet)
             )
             preprocessor_future.add_done_callback(self.preprocessor_complete)
         else:
@@ -214,6 +223,9 @@ class Controller(StdService):
         This method is overrides the method in StdService class and is called when the extension is unloaded.
         """
         logger.warning("Shutdown requested")
+        if self.mqtt_client is None:
+            logger.info("Extension was not started, nothing to shut down.")
+            return
 
         logger.info("Publishing offline availability")
         message_info = self.mqtt_client.publish(
