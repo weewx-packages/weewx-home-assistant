@@ -16,8 +16,8 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: Implementation :: CPython",
 ]
-dependencies = ["paho-mqtt", "pydantic", "setuptools"]
-description = "WeeWX Home Assistant Python library"
+dependencies = ["paho-mqtt>=2.0", "pydantic>=2.7"]
+description = "WeeWX extension that publishes data to Home Assistant with MQTT discovery"
 dynamic = ["version"]
 keywords = ["home-assistant", "mqtt", "weewx"]
 license = { file = "LICENSE" }
@@ -26,9 +26,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 
 [project.urls]
-homepage = "https://github.com/felddy"
-issues = "https://github.com/felddy/weewx-home-assistant/issues"
-source = "https://github.com/felddy/weewx-home-assistant"
+homepage = "https://github.com/weewx-packages/weewx-home-assistant"
+issues = "https://github.com/weewx-packages/weewx-home-assistant/issues"
+source = "https://github.com/weewx-packages/weewx-home-assistant"
 
 [project.optional-dependencies]
 test = [
@@ -37,8 +37,14 @@ test = [
     "pre-commit",
     "pytest-cov",
     "pytest",
-    "weewx == 5.1.0",
+    "weewx == 5.5.2",
 ]
+
+# The package lives in bin/user/weewx_ha, where the WeeWX extension installer
+# copies it from. A pip install still provides the top-level module weewx_ha.
+[tool.setuptools]
+package-dir = { "weewx_ha" = "bin/user/weewx_ha" }
+packages = ["weewx_ha", "weewx_ha.models"]
 
 [tool.setuptools.dynamic]
 version = { attr = "weewx_ha._version.__version__" }

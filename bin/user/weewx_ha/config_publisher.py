@@ -1,9 +1,9 @@
 """Processes loop packets and publish MQTT discovery configurations."""
 
 # Standard Python Libraries
-from collections import defaultdict
 import json
 import logging
+import threading
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -34,6 +34,8 @@ class ConfigPublisher:
         The prefix for MQTT state topics.
     unit_system : UnitSystem
         The unit system to use for measurements.
+    retain_discovery : bool
+        Whether discovery messages are published with the MQTT retain flag.
     seen_measurements : dict of str to dict of str to Any
         A dictionary to hold measurement metadata.
     """
@@ -47,6 +49,7 @@ class ConfigPublisher:
         node_id: str,
         station_info: StationInfo,
         unit_system: UnitSystem = UnitSystem.METRICWX,
+        retain_discovery: bool = True,
     ):
         """
         Initialize the ConfigPublisher.
@@ -67,11 +70,14 @@ class ConfigPublisher:
             The weather station information.
         unit_system : UnitSystem, optional
             The unit system to use for measurements (default is UnitSystem.METRICWX).
+        retain_discovery : bool, optional
+            Publish discovery messages with the MQTT retain flag (default is True).
         """
         self.availability_topic: str = availability_topic
         self.discovery_topic_prefix: str = discovery_topic_prefix
         self.mqtt_client: mqtt.Client = mqtt_client
         self.node_id: str = node_id
+        self.retain_discovery: bool = retain_discovery
         self.state_topic_prefix: str = state_topic_prefix
         self.unit_system: UnitSystem = unit_system
 
@@ -87,8 +93,13 @@ class ConfigPublisher:
 
         self.time_zone: ZoneInfo = station_info.time_zone
 
-        # Dictionary to hold measurement configuration and metadata
-        self.seen_measurements: dict[str, dict[str, Any]] = defaultdict(dict)
+        # Dictionary to hold measurement configuration and metadata. Worker
+        # threads add keys in process_packet() while others iterate it in
+        # publish_discovery(), so every access that iterates or inserts goes
+        # through this lock. An entry is inserted only once it is complete,
+        # because the state publisher reads entries without taking the lock.
+        self.seen_measurements: dict[str, dict[str, Any]] = {}
+        self._measurements_lock = threading.Lock()
 
     def process_packet(self, packet: dict) -> bool:
         """
@@ -109,15 +120,17 @@ class ConfigPublisher:
         found_new_measurements = False
         if self.unit_system is not None:
             packet = to_std_system(packet, int(self.unit_system))
-        for key in packet.keys():
-            if key not in self.seen_measurements:
+        with self._measurements_lock:
+            for key in packet.keys():
+                if key in self.seen_measurements:
+                    continue
                 logger.debug(f"Discovered new measurement: {key}")
                 found_new_measurements = True
-                self.seen_measurements[key] |= get_key_config(key)
+                config = dict(get_key_config(key))
                 # Unit metadata is underlaid with the metadata from the key
-                self.seen_measurements[key]["metadata"] = get_unit_metadata(
-                    key, self.unit_system
-                ) | self.seen_measurements[key].get("metadata", {})
+                unit_metadata = get_unit_metadata(key, self.unit_system)
+                config["metadata"] = unit_metadata | config.get("metadata", {})
+                self.seen_measurements[key] = config
         return found_new_measurements
 
     def publish_discovery(self) -> None:
@@ -135,10 +148,12 @@ class ConfigPublisher:
         -------
         None
         """
-        logger.info(
-            f"Publishing {len(self.seen_measurements)} discovery configurations"
-        )
-        for sensor_name, config in self.seen_measurements.items():
+        # Iterate over a snapshot: process_packet() may add measurements from
+        # another thread while the (slow) MQTT publishes below are running.
+        with self._measurements_lock:
+            measurements = list(self.seen_measurements.items())
+        logger.info(f"Publishing {len(measurements)} discovery configurations")
+        for sensor_name, config in measurements:
             # Construct discovery topic
             integration = config.get("integration", "sensor")
             discovery_topic = f"{self.discovery_topic_prefix}/{integration}/{self.node_id}/{sensor_name}/config"
@@ -160,4 +175,6 @@ class ConfigPublisher:
                 f"Publishing discovery configuration: {discovery_topic}: {payload}"
             )
             # Publish the discovery configuration
-            self.mqtt_client.publish(discovery_topic, json.dumps(payload))
+            self.mqtt_client.publish(
+                discovery_topic, json.dumps(payload), retain=self.retain_discovery
+            )

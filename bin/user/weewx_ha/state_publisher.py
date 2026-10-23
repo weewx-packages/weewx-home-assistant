@@ -1,7 +1,9 @@
 """Processes loop packets and publish state to MQTT."""
 
 # Standard Python Libraries
+import json
 import logging
+from typing import Optional
 
 # Third-Party Libraries
 import paho.mqtt.client as mqtt
@@ -29,6 +31,11 @@ class StatePublisher:
         The prefix for the MQTT topic where state updates will be published.
     unit_system : UnitSystem
         The unit system to use for the state updates.
+    retain_state : bool
+        Whether state messages are published with the MQTT retain flag.
+    json_topic : str or None
+        The topic that receives all values of a packet as one JSON object, or
+        None if that message is disabled.
     """
 
     def __init__(
@@ -37,6 +44,8 @@ class StatePublisher:
         config_publisher: ConfigPublisher,
         state_topic_prefix: str,
         unit_system: UnitSystem = UnitSystem.METRICWX,
+        retain_state: bool = False,
+        json_topic: Optional[str] = None,
     ):
         """
         Initialize the publisher.
@@ -51,11 +60,18 @@ class StatePublisher:
             The prefix for the MQTT topic where state updates will be published.
         unit_system : UnitSystem, optional
             The unit system to use for the state updates. Default is UnitSystem.METRICWX.
+        retain_state : bool, optional
+            Publish state messages with the MQTT retain flag. Default is False.
+        json_topic : str, optional
+            Publish all values of a packet as one JSON object to this topic.
+            Default is None, which disables the message.
         """
         self.mqtt_client = mqtt_client
         self.config_publisher = config_publisher
         self.state_topic_prefix = state_topic_prefix
         self.unit_system = unit_system
+        self.retain_state = retain_state
+        self.json_topic = json_topic
         self.settled_countdown = SETTLE_COUNTDOWN_START
 
     def process_packet(self, packet: dict) -> None:
@@ -66,6 +82,7 @@ class StatePublisher:
             self.settled_countdown -= 1
         if self.unit_system is not None:
             packet = to_std_system(packet, int(self.unit_system))
+        states = {}
         for key, value in packet.items():
             if value is None:
                 # Publishing None values causes Home Assistant templates to fail
@@ -80,4 +97,11 @@ class StatePublisher:
             if convert_lambda := config.get("convert_lambda"):
                 # Apply conversion lambda if it exists
                 value = convert_lambda(value, self.config_publisher)
-            self.mqtt_client.publish(f"{self.state_topic_prefix}/{key}", value)
+            self.mqtt_client.publish(
+                f"{self.state_topic_prefix}/{key}", value, retain=self.retain_state
+            )
+            states[key] = value
+        if self.json_topic and states:
+            self.mqtt_client.publish(
+                self.json_topic, json.dumps(states), retain=self.retain_state
+            )
